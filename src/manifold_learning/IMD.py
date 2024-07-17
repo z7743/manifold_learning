@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
+#from bitnet import BitLinear, BitLinearNew
 
 
 class LinearProjectionNDim(nn.Module):
@@ -25,6 +26,7 @@ class LinearProjectionNDim(nn.Module):
         if random_state != None:
             torch.manual_seed(random_state)
         self.model = nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
+        #self.model = BitLinearNew(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
         #self.model = nn.Sequential(nn.Linear(input_dim, input_dim, bias=True,device=self.device,),
         #                           nn.Sigmoid(),
         #                            nn.Linear(input_dim, input_dim, bias=True,device=self.device,),

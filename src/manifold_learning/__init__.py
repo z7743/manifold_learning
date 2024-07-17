@@ -1,5 +1,11 @@
-from .IMD import LinearProjectionNDim, IMD_nD , RandomTpRangeSubsetDataset
+from .linear_projection import LinearProjectionNDim
+from .data_samplers import RandomTpRangeSubsetDataset, RandomTimeDelaySubsetDataset, RandomXYSubsetDataset
 
-__all__ = [
-     "LinearProjectionNDim", "IMD_nD", "RandomTpRangeSubsetDataset"
-]
+from .imd_nd import IMD_nD
+from .imd_1d import IMD_1D
+from .imd_reg import IMD_reg
+
+class IMD:
+    IMD_nD = IMD_nD
+    IMD_1D = IMD_1D
+    IMD_reg = IMD_reg

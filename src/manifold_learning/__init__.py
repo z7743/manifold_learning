@@ -6,6 +6,6 @@ from .imd_1d import IMD_1D
 from .imd_reg import IMD_reg
 
 class IMD:
-    IMD_nD = IMD_nD
-    IMD_1D = IMD_1D
-    IMD_reg = IMD_reg
+     IMD_nD = IMD_nD
+     IMD_1D = IMD_1D
+     IMD_reg = IMD_reg

@@ -164,40 +164,40 @@ class IMD_nD_smap:
         E_y = sample_y.shape[-2]
         sample_size = sample_X.shape[0]
         subset_size = subset_X.shape[0]
+
+        sample_X_t = sample_X.permute(2, 0, 1)
+        subset_X_t = subset_X.permute(2, 0, 1)
+        sample_y_t = sample_y.permute(2, 0, 1)
+        subset_y_t = subset_y.permute(2, 0, 1)
         
-        weights = self._get_local_weights(torch.permute(subset_X,(2,0,1)),torch.permute(sample_X,(2,0,1)),omega)
-        W = weights.reshape(dim * sample_size,-1)[:,:,None]
+        weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, omega)
+        W = weights.view(dim * sample_size, -1, 1)
 
-        #W = torch.diag_embed(weights.reshape(dim * sample_size,-1))
-        #W = weights.reshape(dim * sample_size,-1)
-
-        X = torch.permute(subset_X,(2,0,1))[:,None,:,:].expand(dim,sample_size,subset_size,E_x)
+        X = subset_X_t.unsqueeze(1).expand(dim,sample_size,subset_size,E_x)
         X = X.reshape(dim * sample_size, subset_size,E_x)
 
-        Y = torch.permute(subset_y,(2,0,1))[:,None,:,:].expand(dim,sample_size,subset_size,E_y)
+        Y = subset_y_t.unsqueeze(1).expand(dim,sample_size,subset_size,E_y)
         Y = Y.reshape(dim * sample_size, subset_size, E_y)
 
         X_intercept = torch.cat([torch.ones((dim * sample_size, subset_size, 1),device=self.device), X], dim=2)
         
-        #XTW = torch.bmm(X_intercept.transpose(1, 2), W)
-        XTW = (X_intercept * W).transpose(1, 2)
-        XTWX = torch.bmm(XTW, X_intercept)
-        XTWy = torch.bmm(XTW, Y)
+        X_intercept_weighted = X_intercept * W
+        Y_weighted = Y * W
+
+        XTWX = torch.bmm(X_intercept_weighted.transpose(1, 2), X_intercept_weighted)
+        XTWy = torch.bmm(X_intercept_weighted.transpose(1, 2), Y_weighted)
 
         beta = torch.bmm(torch.inverse(XTWX), XTWy)
-
-        intercepts = beta[:, 0, :]  # Intercepts for each batch and each feature
-        slopes = beta[:, 1:, :]     # Slopes for each batch and each feature
-        slopes = slopes.reshape(dim,sample_size,*slopes.shape[1:]).unsqueeze(1)
         beta = beta.reshape(dim,sample_size,*beta.shape[1:]).unsqueeze(1)
 
-        X_ = torch.permute(sample_X,(2,0,1)).unsqueeze(0)
+        X_ = sample_X_t.unsqueeze(0)
         X_ = torch.cat([torch.ones((*X_.shape[:-1], 1),device=self.device), X_], dim=3)
         
         A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
         A = torch.permute(A[:,0],(2,3,1,0))
 
-        B = sample_y[:,:,:,None].expand(sample_y.shape[0], E_y, dim, dim)
+        B = sample_y.unsqueeze(-1).expand(sample_size, E_y, dim, dim)
+        #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)
         
         r_AB = self._get_batch_corr(A,B)
         return r_AB
@@ -286,10 +286,14 @@ class IMD_nD_smap:
         else:
             return indices
         
-    def _get_local_weights(self, lib, sublib, omega = 1):
+    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, omega = 1):
         dist = torch.cdist(sublib,lib)
         weights = torch.exp(-(omega*dist/dist.mean(axis=2)[:,:,None]))
 
+        if exclusion_rad > 0:
+            exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)
+            weights = weights * exclusion_matrix
+        
         return weights
 
     def get_loss_history(self):

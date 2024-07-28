@@ -25,7 +25,7 @@ class RandomTpRangeSubsetDataset(Dataset):
         self.num_datapoints = X.shape[0]
 
     def __len__(self):
-        return self.tp_range.shape[0] * self.num_batches #Temporary solution to sample number of samples
+        return self.tp_range.shape[0] #* self.num_batches #Temporary solution to sample number of samples
     
     def __getitem__(self, idx):
         sample_idx = torch.argsort(torch.rand(self.num_datapoints-self.tp_max-1,device=self.device))[0:self.sample_size]

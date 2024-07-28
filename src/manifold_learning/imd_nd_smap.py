@@ -47,9 +47,9 @@ class IMD_nD_smap:
         X = torch.tensor(X,requires_grad=True, device=self.device, dtype=torch.float32)
 
         if tp_policy == "fixed":
-            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.arange(tp,tp+1),device=self.device)
+            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
         elif tp_policy == "range":
-            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.arange(1,tp+1), device=self.device)
+            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
         else:
             pass #TODO: pass an exception
 
@@ -73,10 +73,7 @@ class IMD_nD_smap:
 
                 loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, omega, exclusion_rad)
                 
-                if tp_policy == "range":
-                    loss /= tp * num_batches
-                elif tp_policy == "fixed":
-                    loss /= num_batches
+                loss /= num_batches
                 loss.backward()
                 total_loss += loss.item() 
 
@@ -169,8 +166,10 @@ class IMD_nD_smap:
         subset_size = subset_X.shape[0]
         
         weights = self._get_local_weights(torch.permute(subset_X,(2,0,1)),torch.permute(sample_X,(2,0,1)),omega)
-        
-        W = torch.diag_embed(weights.reshape(dim * sample_size,-1))
+        W = weights.reshape(dim * sample_size,-1)[:,:,None]
+
+        #W = torch.diag_embed(weights.reshape(dim * sample_size,-1))
+        #W = weights.reshape(dim * sample_size,-1)
 
         X = torch.permute(subset_X,(2,0,1))[:,None,:,:].expand(dim,sample_size,subset_size,E_x)
         X = X.reshape(dim * sample_size, subset_size,E_x)
@@ -180,7 +179,8 @@ class IMD_nD_smap:
 
         X_intercept = torch.cat([torch.ones((dim * sample_size, subset_size, 1),device=self.device), X], dim=2)
         
-        XTW = torch.bmm(X_intercept.transpose(1, 2), W)
+        #XTW = torch.bmm(X_intercept.transpose(1, 2), W)
+        XTW = (X_intercept * W).transpose(1, 2)
         XTWX = torch.bmm(XTW, X_intercept)
         XTWy = torch.bmm(XTW, Y)
 

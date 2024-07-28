@@ -47,12 +47,12 @@ class IMD_nD:
         X = torch.tensor(X,requires_grad=True, device=self.device, dtype=torch.float32)
 
         if tp_policy == "fixed":
-            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.arange(tp,tp+1),device=self.device)
+            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
         elif tp_policy == "range":
-            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.arange(1,tp+1), device=self.device)
+            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
         else:
             pass #TODO: pass an exception
-
+        
         dataloader = DataLoader(dataset, batch_size=1,pin_memory=False)
 
         # Reinitialize optimizer if parameters changed
@@ -73,10 +73,7 @@ class IMD_nD:
 
                 loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, nbrs_num, exclusion_rad)
                 
-                if tp_policy == "range":
-                    loss /= tp * num_batches
-                elif tp_policy == "fixed":
-                    loss /= num_batches
+                loss /= num_batches
                 loss.backward()
                 total_loss += loss.item() 
 

@@ -27,7 +27,7 @@ class IMD_nD_smap:
         self.subtract_corr = subtract_corr
         self.loss_history = []
 
-    def fit(self, X, sample_len, library_len, exclusion_rad, omega=1, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
+    def fit(self, X, sample_len, library_len, exclusion_rad, omega=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
         """
         Fits the model to the data.
 
@@ -72,7 +72,7 @@ class IMD_nD_smap:
                 sample_y_z = self.model(sample_y)
 
                 loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, omega, exclusion_rad)
-                
+
                 loss /= num_batches
                 loss.backward()
                 total_loss += loss.item() 
@@ -167,7 +167,6 @@ class IMD_nD_smap:
 
         sample_X_t = sample_X.permute(2, 0, 1)
         subset_X_t = subset_X.permute(2, 0, 1)
-        sample_y_t = sample_y.permute(2, 0, 1)
         subset_y_t = subset_y.permute(2, 0, 1)
         
         weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, omega)
@@ -195,6 +194,10 @@ class IMD_nD_smap:
         
         A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
         A = torch.permute(A[:,0],(2,3,1,0))
+
+        #A = torch.bmm(X_.expand(dim,dim,sample_size,E_x+1).reshape(dim*dim*sample_size,1,E_x+1),
+        #              beta.expand(dim,dim,sample_size,E_x+1,E_y).reshape(dim*dim*sample_size,E_x+1,E_y)).reshape(dim,dim,sample_size,E_y)
+        #A = torch.permute(A,(2,3,1,0))
 
         B = sample_y.unsqueeze(-1).expand(sample_size, E_y, dim, dim)
         #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)
@@ -286,9 +289,12 @@ class IMD_nD_smap:
         else:
             return indices
         
-    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, omega = 1):
+    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, omega):
         dist = torch.cdist(sublib,lib)
-        weights = torch.exp(-(omega*dist/dist.mean(axis=2)[:,:,None]))
+        if omega == None:
+            weights = torch.exp(-(dist))
+        else:
+            weights = torch.exp(-(omega*dist/dist.mean(axis=2)[:,:,None]))
 
         if exclusion_rad > 0:
             exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)

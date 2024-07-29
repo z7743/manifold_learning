@@ -62,7 +62,7 @@ class RandomTimeDelaySubsetDataset(Dataset):
         
 
     def __len__(self):
-        return self.tp_range.shape[0] * self.num_batches #Temporary solution to sample number of samples
+        return self.tp_range.shape[0] #Temporary solution to sample number of samples
     
     def __getitem__(self, idx):
         sample_idx = (self.E-1)*self.tau + torch.argsort(torch.rand(self.num_datapoints-self.tp_max - 1 - (self.E-1)*self.tau, device=self.device))[0:self.sample_size]

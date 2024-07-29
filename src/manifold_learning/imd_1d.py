@@ -72,7 +72,8 @@ class IMD_1D:
 
         if self.subtract_corr:
             #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
-            corr = torch.abs(self._get_autoreg_matrix_approx(sample_y, sample_X[:,[0]]))
+            #corr = torch.abs(self._get_autoreg_matrix_approx(sample_X[:,[0]], sample_y))
+            corr = torch.abs(self._get_autoreg_matrix_approx( sample_y, sample_X[:,[0]]))
             if dim > 1:
                 score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-1),axis=2)/2 + \
                              torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2).mean() +\

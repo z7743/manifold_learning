@@ -133,3 +133,48 @@ def calculate_rank_for_variance(data_matrix, variance_threshold=0.95):
     
     return rank
 
+def calculate_moving_average_firing_rate(spike_times, window_size, output_sampling_rate):
+    """
+    Calculate the firing rate using a moving average from spike times.
+
+    Parameters:
+    spike_times (list of np.array): A list where each element is an array of spike times for a neuron.
+    window_size (float): The size of the moving average window in seconds.
+    output_sampling_rate (float): The sampling rate for the output firing rate in Hz.
+
+    Returns:
+    tuple: (firing_rates, time_points) where firing_rates is a list of np.array of firing rates
+           for each neuron, and time_points is the common time axis.
+    """
+    # Determine the total duration
+    max_duration = max(spikes[-1] for spikes in spike_times)
+    
+    # Create a common time axis
+    dt = 1.0 / output_sampling_rate
+    time_points = np.arange(0, max_duration + dt, dt)
+    
+    firing_rates = []
+    for neuron_spikes in spike_times:
+        # Initialize the firing rate array
+        firing_rate = np.zeros(len(time_points))
+        
+        # Calculate cumulative spike count
+        cumulative_spikes = np.zeros_like(time_points)
+        for spike in neuron_spikes:
+            cumulative_spikes[np.searchsorted(time_points, spike)] += 1
+        cumulative_spikes = np.cumsum(cumulative_spikes)
+        
+        # Calculate the moving average using the cumulative spike count
+        half_window_size = window_size / 2
+        for i, t in enumerate(time_points):
+            window_start = max(0, np.searchsorted(time_points, t - half_window_size))
+            window_end = np.searchsorted(time_points, t + half_window_size)
+            if window_start == 0:
+                spike_count = cumulative_spikes[window_end - 1]
+            else:
+                spike_count = cumulative_spikes[window_end - 1] - cumulative_spikes[window_start - 1]
+            firing_rate[i] = spike_count / window_size
+        
+        firing_rates.append(firing_rate)
+    
+    return firing_rates, time_points

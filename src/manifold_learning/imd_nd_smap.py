@@ -170,34 +170,34 @@ class IMD_nD_smap:
         subset_y_t = subset_y.permute(2, 0, 1)
         
         weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, omega)
-        W = weights.view(dim * sample_size, -1, 1)
+        W = weights.unsqueeze(1).expand(dim, dim, sample_size, subset_size).reshape(dim * dim * sample_size, subset_size, 1)
 
-        X = subset_X_t.unsqueeze(1).expand(dim,sample_size,subset_size,E_x)
-        X = X.reshape(dim * sample_size, subset_size,E_x)
+        X = subset_X_t.unsqueeze(1).unsqueeze(1).expand(dim, dim, sample_size, subset_size, E_x)
+        X = X.reshape(dim * dim * sample_size, subset_size, E_x)
 
-        Y = subset_y_t.unsqueeze(1).expand(dim,sample_size,subset_size,E_y)
-        Y = Y.reshape(dim * sample_size, subset_size, E_y)
+        Y = subset_y_t.unsqueeze(1).unsqueeze(0).expand(dim, dim, sample_size, subset_size, E_y)
+        Y = Y.reshape(dim * dim * sample_size, subset_size, E_y)
 
-        X_intercept = torch.cat([torch.ones((dim * sample_size, subset_size, 1),device=self.device), X], dim=2)
+        X_intercept = torch.cat([torch.ones((dim * dim * sample_size, subset_size, 1),device=self.device), X], dim=2)
         
         X_intercept_weighted = X_intercept * W
         Y_weighted = Y * W
 
         XTWX = torch.bmm(X_intercept_weighted.transpose(1, 2), X_intercept_weighted)
         XTWy = torch.bmm(X_intercept_weighted.transpose(1, 2), Y_weighted)
-
         beta = torch.bmm(torch.inverse(XTWX), XTWy)
-        beta = beta.reshape(dim,sample_size,*beta.shape[1:]).unsqueeze(1)
+        #beta_ = beta.reshape(dim,dim,sample_size,*beta.shape[1:])
 
-        X_ = sample_X_t.unsqueeze(0)
-        X_ = torch.cat([torch.ones((*X_.shape[:-1], 1),device=self.device), X_], dim=3)
+        X_ = sample_X_t.unsqueeze(1).expand(dim, dim, sample_size, E_x)
+        X_ = X_.reshape(dim * dim * sample_size, E_x)
+        X_ = torch.cat([torch.ones((dim * dim * sample_size, 1),device=self.device), X_], dim=1)
+        X_ = X_.reshape(dim * dim * sample_size, 1, E_x+1)
         
-        A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
-        A = torch.permute(A[:,0],(2,3,1,0))
+        #A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
+        #A = torch.permute(A[:,0],(2,3,1,0))
 
-        #A = torch.bmm(X_.expand(dim,dim,sample_size,E_x+1).reshape(dim*dim*sample_size,1,E_x+1),
-        #              beta.expand(dim,dim,sample_size,E_x+1,E_y).reshape(dim*dim*sample_size,E_x+1,E_y)).reshape(dim,dim,sample_size,E_y)
-        #A = torch.permute(A,(2,3,1,0))
+        A = torch.bmm(X_, beta).reshape(dim, dim, sample_size, E_y)
+        A = torch.permute(A,(2,3,1,0))
 
         B = sample_y.unsqueeze(-1).expand(sample_size, E_y, dim, dim)
         #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)

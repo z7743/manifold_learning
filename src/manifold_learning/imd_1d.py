@@ -3,6 +3,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from .linear_projection import LinearProjectionNDim
 from .data_samplers import RandomTimeDelaySubsetDataset
+from .utils.utils import get_td_embedding_torch
 
 
 class IMD_1D:
@@ -91,10 +92,12 @@ class IMD_1D:
             return score
         
     
-    def predict(self, X):
+    def predict(self, X, return_embedding = True):
         with torch.no_grad():
             inputs = torch.tensor(X, dtype=torch.float32,device=self.device)
             outputs = torch.permute(self.model(inputs),dims=(0,2,1)) #Easier to interpret
+            if return_embedding:
+                outputs = get_td_embedding_torch(outputs,self.embed_dim,self.embed_lag).squeeze()
         return outputs.cpu().numpy()
 
     def generate(self, X, nbrs_num, exclusion_rad, tp=1, device="cpu"):

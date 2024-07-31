@@ -2,54 +2,35 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from .linear_projection import LinearProjectionNDim
-from .data_samplers import RandomTpRangeSubsetDataset
+from .data_samplers import RandomTimeDelaySubsetDataset
+from .utils.utils import get_td_embedding_torch
 
-class IMD_nD_smap:
 
-    def __init__(self, input_dim, embed_dim, n_components, subtract_corr=True,device="cuda",random_state=None):
-        """
-        Initializes the IMD_nD model.
-        
-        Args:
-            input_dim (int): Dimension of the input data.
-            embed_dim (int): Dimension of the embedding of the component.
-            n_components (int): Number of components.
-            subtract_corr (bool, optional): Whether to subtract correlation, default is True.
-            device (str, optional): Device to place the model on, default is "cuda".
-            random_state (int): Ignored if None.
-        """
+class IMD_1D_smap:
+
+    def __init__(self, input_dim, n_components, embed_dim, embed_lag, subtract_corr=True,device="cuda",random_state=None):
         self.device = device
 
-        self.model = LinearProjectionNDim(input_dim, embed_dim, n_components, device,random_state)
+        self.model = LinearProjectionNDim(input_dim, 1, n_components, device,random_state)
         self.optimizer_name = None
         self.learning_rate = None
         self.optimizer = None
         self.subtract_corr = subtract_corr
         self.loss_history = []
+        self.n_components = n_components
+        self.embed_lag = embed_lag
+        self.embed_dim = embed_dim
 
     def fit(self, X, sample_len, library_len, exclusion_rad, omega=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
-        """
-        Fits the model to the data.
+        embed_lag = self.embed_lag
+        embed_dim = self.embed_dim
 
-        Args:
-            X (numpy.ndarray): Input data.
-            sample_len (int): Length of samples used for prediction.
-            library_len (int): Length of library used for kNN search.
-            exclusion_rad (int): Exclusion radius for kNN search.
-            omega (float): S-map omega.
-            tp (int): Time lag for prediction.
-            epochs (int, optional): Number of training epochs, default is 100.
-            num_batches (int, optional): Number of batches, default is 32.
-            optimizer (str, optional): Optimizer to use, default is "Adam".
-            learning_rate (float, optional): Learning rate for the optimizer, default is 0.001.
-            tp_policy (str, optional): Batch sampling policy, default is "range". If "range" then the embedding will be optimized for the range of 1...tp and the total number of samplings calculated as num_batches*tp. If "fixed" then within one optimization cycle the embedding will be optimized only for one value of tp.
-        """
         X = torch.tensor(X,requires_grad=True, device=self.device, dtype=torch.float32)
 
         if tp_policy == "fixed":
-            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
+            dataset = RandomTimeDelaySubsetDataset(X, sample_len, library_len, embed_dim, embed_lag, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
         elif tp_policy == "range":
-            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
+            dataset = RandomTimeDelaySubsetDataset(X, sample_len, library_len, embed_dim, embed_lag, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
         else:
             pass #TODO: pass an exception
 
@@ -66,13 +47,19 @@ class IMD_nD_smap:
             self.optimizer.zero_grad()
 
             for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
-                subset_X_z = self.model(subset_X)
-                subset_y_z = self.model(subset_y)
-                sample_X_z = self.model(sample_X)
-                sample_y_z = self.model(sample_y)
+                subset_idx = subset_idx[:,0]
+                sample_idx = sample_idx[:,0]
+
+                subset_X_z = self.model(subset_X.reshape(1, embed_dim * library_len, -1)).reshape(embed_dim, library_len, self.n_components)
+                subset_y_z = self.model(subset_y[:,0])
+                sample_X_z = self.model(sample_X.reshape(1, embed_dim * sample_len, -1)).reshape(embed_dim, sample_len, self.n_components)
+                sample_y_z = self.model(sample_y[:,0])
+
+                subset_X_z = torch.permute(subset_X_z, (1, 0, 2))
+                sample_X_z = torch.permute(sample_X_z, (1, 0, 2))
 
                 loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, omega, exclusion_rad)
-
+                
                 loss /= num_batches
                 loss.backward()
                 total_loss += loss.item() 
@@ -90,52 +77,34 @@ class IMD_nD_smap:
 
         if self.subtract_corr:
             #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
-            corr = torch.abs(self._get_autoreg_matrix_approx(sample_y,sample_X))
+            #corr = torch.abs(self._get_autoreg_matrix_approx(sample_X[:,[0]], sample_y))
+            corr = torch.abs(self._get_autoreg_matrix_approx( sample_y, sample_X[:,[0]]))
             if dim > 1:
                 score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-1),axis=2)/2 + \
-                             torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2 +\
-                           -ccm[:,mask]**2 + corr[:,mask]**2).mean()
+                             torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2).mean() +\
+                           (-ccm[:,mask]**2 + corr[:,mask]**2).mean()
             else:
                 score = 1 + (-ccm[:,0,0] + corr[:,0,0]).mean()
             return score
         else:
             if dim > 1:
                 score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-1),axis=2)/2 + \
-                             torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2 + \
-                           -ccm[:,mask]**2).mean()
+                             torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2).mean() + \
+                           (-ccm[:,mask]**2).mean()
             else:
                 score = 1 + (-ccm[:,0,0]).mean()
             return score
         
     
-    def predict(self, X):
-        """
-        Calculates embeddings using the trained model.
-        
-        Args:
-            X (numpy.ndarray): Input data.
-        
-        Returns:
-            numpy.ndarray: Predicted outputs.
-        """
+    def predict(self, X, return_embedding = True):
         with torch.no_grad():
             inputs = torch.tensor(X, dtype=torch.float32,device=self.device)
             outputs = torch.permute(self.model(inputs),dims=(0,2,1)) #Easier to interpret
+            if return_embedding:
+                outputs = get_td_embedding_torch(outputs,self.embed_dim,self.embed_lag).squeeze()
         return outputs.cpu().numpy()
 
     def generate(self, X, nbrs_num, exclusion_rad, tp=1, device="cpu"):
-        """
-        Generates the prediction using the model.
-        
-        Args:
-            X (numpy.ndarray): Input data.
-            nbrs_num (int): Number of neighbors for kNN search.
-            exclusion_rad (int): Exclusion radius for kNN search.
-            tp (int, optional): Time lag for prediction, default is 1.
-        
-        Returns:
-            tuple: Generated results and the reconstructed input.
-        """
         with torch.no_grad():
             X = torch.tensor(X, dtype=torch.float32,device=device)
             self.model.to(device)
@@ -157,6 +126,15 @@ class IMD_nD_smap:
             rec = self.model.backward(res)
             self.model.to(self.device)
         return res, rec
+
+
+    def _get_td_embedding(ts, dim, stride, return_pred=False, tp=0):
+        tdemb = ts.unfold(0,(dim-1) * stride + 1,1)[...,::stride]
+        tdemb = torch.swapaxes(tdemb,-1,-2)
+        if return_pred:
+            return tdemb[:tdemb.shape[0]-tp], ts[(dim-1) * stride + tp:]
+        else:
+            return tdemb
 
     def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad):
         dim = sample_X.shape[-1]
@@ -186,21 +164,16 @@ class IMD_nD_smap:
         XTWX = torch.bmm(X_intercept_weighted.transpose(1, 2), X_intercept_weighted)
         XTWy = torch.bmm(X_intercept_weighted.transpose(1, 2), Y_weighted)
         beta = torch.bmm(torch.inverse(XTWX), XTWy)
-        #beta_ = beta.reshape(dim,dim,sample_size,*beta.shape[1:])
 
         X_ = sample_X_t.unsqueeze(1).expand(dim, dim, sample_size, E_x)
         X_ = X_.reshape(dim * dim * sample_size, E_x)
         X_ = torch.cat([torch.ones((dim * dim * sample_size, 1),device=self.device), X_], dim=1)
         X_ = X_.reshape(dim * dim * sample_size, 1, E_x+1)
         
-        #A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
-        #A = torch.permute(A[:,0],(2,3,1,0))
-
         A = torch.bmm(X_, beta).reshape(dim, dim, sample_size, E_y)
         A = torch.permute(A,(2,3,1,0))
 
         B = sample_y.unsqueeze(-1).expand(sample_size, E_y, dim, dim)
-        #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)
         
         r_AB = self._get_batch_corr(A,B)
         return r_AB
@@ -227,15 +200,6 @@ class IMD_nD_smap:
         return r_AB
     
     def _get_batch_cosine_similarity(self,A, B):
-        """
-        Computes the batch-wise cosine similarity between two 4D tensors A and B.
-        
-        Args:
-        A, B: Tensors of shape [num points, num dims, num components, num components].
-        
-        Returns:
-        Tensor of cosine similarities with shape [num dims, num components, num components].
-        """
         # Compute the norms of A and B along the num points axis
         norm_A = torch.norm(A, p=2, dim=0, keepdim=True)
         norm_B = torch.norm(B, p=2, dim=0, keepdim=True)
@@ -254,15 +218,6 @@ class IMD_nD_smap:
         return dot_product
 
     def _get_batch_rmse(self, A, B):
-        """
-        Computes the batch-wise Root Mean Square Error (RMSE) between two 4D tensors A and B.
-        
-        Args:
-        A, B: Tensors of shape [num points, num dims, num components, num components].
-        
-        Returns:
-        Tensor of RMSE values with shape [num dims, num components, num components].
-        """
         # Compute the squared differences between A and B
         squared_diff = (A - B) ** 2
         
@@ -289,4 +244,3 @@ class IMD_nD_smap:
 
     def get_loss_history(self):
         return self.loss_history
-    

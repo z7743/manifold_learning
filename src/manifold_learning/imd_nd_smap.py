@@ -27,7 +27,7 @@ class IMD_nD_smap:
         self.subtract_corr = subtract_corr
         self.loss_history = []
 
-    def fit(self, X, sample_len, library_len, exclusion_rad, omega=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
+    def fit(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
         """
         Fits the model to the data.
 
@@ -36,7 +36,7 @@ class IMD_nD_smap:
             sample_len (int): Length of samples used for prediction.
             library_len (int): Length of library used for kNN search.
             exclusion_rad (int): Exclusion radius for kNN search.
-            omega (float): S-map omega.
+            theta (float): S-map theta.
             tp (int): Time lag for prediction.
             epochs (int, optional): Number of training epochs, default is 100.
             num_batches (int, optional): Number of batches, default is 32.
@@ -71,7 +71,7 @@ class IMD_nD_smap:
                 sample_X_z = self.model(sample_X)
                 sample_y_z = self.model(sample_y)
 
-                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, omega, exclusion_rad)
+                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad)
 
                 loss /= num_batches
                 loss.backward()
@@ -82,9 +82,9 @@ class IMD_nD_smap:
             print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')
             self.loss_history += [total_loss]
 
-    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad):
+    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]
-        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad))
+        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
         #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
         mask = torch.eye(dim,dtype=bool,device=self.device)
 
@@ -158,7 +158,7 @@ class IMD_nD_smap:
             self.model.to(self.device)
         return res, rec
 
-    def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad):
+    def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]
         E_x = sample_X.shape[-2]
         E_y = sample_y.shape[-2]
@@ -169,7 +169,7 @@ class IMD_nD_smap:
         subset_X_t = subset_X.permute(2, 0, 1)
         subset_y_t = subset_y.permute(2, 0, 1)
         
-        weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, omega)
+        weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, theta)
         W = weights.unsqueeze(1).expand(dim, dim, sample_size, subset_size).reshape(dim * dim * sample_size, subset_size, 1)
 
         X = subset_X_t.unsqueeze(1).unsqueeze(1).expand(dim, dim, sample_size, subset_size, E_x)
@@ -274,12 +274,12 @@ class IMD_nD_smap:
         
         return rmse
         
-    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, omega):
+    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, theta):
         dist = torch.cdist(sublib,lib)
-        if omega == None:
+        if theta == None:
             weights = torch.exp(-(dist))
         else:
-            weights = torch.exp(-(omega*dist/dist.mean(axis=2)[:,:,None]))
+            weights = torch.exp(-(theta*dist/dist.mean(axis=2)[:,:,None]))
 
         if exclusion_rad > 0:
             exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)

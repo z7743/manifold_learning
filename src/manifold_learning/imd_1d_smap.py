@@ -21,7 +21,7 @@ class IMD_1D_smap:
         self.embed_lag = embed_lag
         self.embed_dim = embed_dim
 
-    def fit(self, X, sample_len, library_len, exclusion_rad, omega=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
+    def fit(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
         embed_lag = self.embed_lag
         embed_dim = self.embed_dim
 
@@ -58,7 +58,7 @@ class IMD_1D_smap:
                 subset_X_z = torch.permute(subset_X_z, (1, 0, 2))
                 sample_X_z = torch.permute(sample_X_z, (1, 0, 2))
 
-                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, omega, exclusion_rad)
+                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad)
                 
                 loss /= num_batches
                 loss.backward()
@@ -69,9 +69,9 @@ class IMD_1D_smap:
             print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')
             self.loss_history += [total_loss]
 
-    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad):
+    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]
-        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad))
+        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
         #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
         mask = torch.eye(dim,dtype=bool,device=self.device)
 
@@ -101,7 +101,7 @@ class IMD_1D_smap:
             inputs = torch.tensor(X, dtype=torch.float32,device=self.device)
             outputs = torch.permute(self.model(inputs),dims=(0,2,1)) #Easier to interpret
             if return_embedding:
-                outputs = get_td_embedding_torch(outputs,self.embed_dim,self.embed_lag).squeeze()
+                outputs = get_td_embedding_torch(outputs,self.embed_dim,self.embed_lag).squeeze(-1)
         return outputs.cpu().numpy()
 
     def generate(self, X, nbrs_num, exclusion_rad, tp=1, device="cpu"):
@@ -136,7 +136,7 @@ class IMD_1D_smap:
         else:
             return tdemb
 
-    def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, omega, exclusion_rad):
+    def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]
         E_x = sample_X.shape[-2]
         E_y = sample_y.shape[-2]
@@ -147,7 +147,7 @@ class IMD_1D_smap:
         subset_X_t = subset_X.permute(2, 0, 1)
         subset_y_t = subset_y.permute(2, 0, 1)
         
-        weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, omega)
+        weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, theta)
         W = weights.unsqueeze(1).expand(dim, dim, sample_size, subset_size).reshape(dim * dim * sample_size, subset_size, 1)
 
         X = subset_X_t.unsqueeze(1).unsqueeze(1).expand(dim, dim, sample_size, subset_size, E_x)
@@ -229,12 +229,12 @@ class IMD_1D_smap:
         
         return rmse
         
-    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, omega):
+    def _get_local_weights(self, lib, sublib, subset_idx, sample_idx, exclusion_rad, theta):
         dist = torch.cdist(sublib,lib)
-        if omega == None:
+        if theta == None:
             weights = torch.exp(-(dist))
         else:
-            weights = torch.exp(-(omega*dist/dist.mean(axis=2)[:,:,None]))
+            weights = torch.exp(-(theta*dist/dist.mean(axis=2)[:,:,None]))
 
         if exclusion_rad > 0:
             exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)

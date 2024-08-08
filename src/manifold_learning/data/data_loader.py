@@ -44,6 +44,16 @@ def load_traffic_dataset() -> pd.DataFrame:
         raise FileNotFoundError(f"File '{filename}' not found in datasets directory.")
     return pd.read_csv(filepath)
 
+def load_co2_dataset() -> pd.DataFrame:
+    filename = "CO2data.xlsx"
+    filepath = os.path.join(DATA_DIR, filename)
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File '{filename}' not found in datasets directory.")
+    df = pd.read_excel(filepath)
+    data = df.to_numpy()[1:,3:].astype(float)
+    data = data.reshape(-1,36,72)
+    return data
+
 def lorenz(t, state, sigma, beta, rho):
     """
     [ChatGPT written]

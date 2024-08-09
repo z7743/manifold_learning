@@ -290,3 +290,79 @@ class IMD_nD_smap:
     def get_loss_history(self):
         return self.loss_history
     
+
+    def find_iterative_solution(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, tp_policy="range"):
+
+        data = torch.tensor(X, device=self.device, dtype=torch.float32)
+        
+
+        if tp_policy == "fixed":
+            dataset = RandomTpRangeSubsetDataset(data, sample_len, library_len, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
+        elif tp_policy == "range":
+            dataset = RandomTpRangeSubsetDataset(data, sample_len, library_len, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
+        else:
+            pass #TODO: pass an exception
+
+        dataloader = DataLoader(dataset, batch_size=1,pin_memory=False)
+        
+        
+        E = 2
+        WW = torch.normal(0,1,(data.shape[1],E),device=self.device)
+        for epoch in range(epochs):
+            WW_list = []
+            for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
+                subset_X_z = subset_X[0] @ WW
+                subset_y_z = subset_y[0] @ WW
+                sample_X_z = sample_X[0] @ WW
+                sample_y_z = sample_y[0] @ WW
+
+                sample_size = sample_X.shape[1]
+                subset_size = subset_X.shape[1]
+
+                dist = torch.cdist(sample_X_z,subset_X_z,)
+                weights = torch.exp(-(theta*dist/dist.mean(axis=1)[:,None]))
+
+                W = weights.unsqueeze(2)
+
+                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, E)
+
+                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, E)
+
+                X = torch.cat([torch.ones((sample_size, subset_size, 1),device=self.device), X], dim=2)
+                
+                X_weighted = X * W
+                Y_weighted = Y * W
+
+                XTWX = torch.bmm(X.transpose(1, 2), X_weighted)
+                XTWy = torch.bmm(X.transpose(1, 2), Y_weighted)
+                beta = torch.bmm(torch.inverse(XTWX), XTWy)
+
+                X_ = sample_X_z.unsqueeze(1)
+                X_ = torch.cat([torch.ones((sample_size, 1, 1),device=self.device), X_], dim=2)
+                
+                A = torch.bmm(X_, beta).squeeze(1)
+
+                B = sample_y[0]
+
+                #XtX = torch.matmul(B.T, B)
+                #XtX_inv = torch.inverse(XtX)
+                #Xty = torch.matmul(B.T, A)
+
+                #WW_ = torch.matmul(XtX_inv, Xty)
+
+                X_pseudo_inverse = torch.linalg.pinv(B)
+                WW_ = X_pseudo_inverse @ A
+
+                WW_list += [WW_]
+            WW__ = torch.stack(WW_list).mean(axis=0)
+            #print(WW_.mean())
+            WW__ = (WW__-WW__.mean())/WW__.std()
+            WW = WW__
+            #WW = WW*0.6 + WW__*0.4
+            #WW = (WW-WW.mean())/WW.std()
+
+            print(self._get_batch_rmse(A[:,:,None,None],sample_y_z[:,:,None,None]).mean())
+        return WW.cpu().detach().numpy()
+
+
+

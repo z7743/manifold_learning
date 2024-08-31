@@ -244,3 +244,90 @@ class IMD_1D_smap:
 
     def get_loss_history(self):
         return self.loss_history
+
+
+    def find_iterative_solution(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, tp_policy="range"):
+
+        data = torch.tensor(X, device=self.device, dtype=torch.float32)
+        embed_dim = 3
+        embed_lag = 20
+
+        if tp_policy == "fixed":
+            dataset = RandomTimeDelaySubsetDataset(X, sample_len, library_len, embed_dim, embed_lag, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
+        elif tp_policy == "range":
+            dataset = RandomTimeDelaySubsetDataset(X, sample_len, library_len, embed_dim, embed_lag, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
+        else:
+            pass #TODO: pass an exception
+
+        dataloader = DataLoader(dataset, batch_size=1,pin_memory=False)
+        
+        
+        WW = torch.normal(0,1,(data.shape[1],1),dtype=torch.float64, device=self.device)
+        for epoch in range(epochs):
+            WW_list = []
+            for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
+                subset_X_z = (subset_X[0] @ WW).squeeze(-1).T
+                subset_y_z = (subset_y[0] @ WW).squeeze(-1).T
+                sample_X_z = (sample_X[0] @ WW).squeeze(-1).T
+                sample_y_z = (sample_y[0] @ WW).squeeze(-1).T
+                subset_idx = subset_idx[:,-1]
+                sample_idx = sample_idx[:,-1]
+
+                sample_size = sample_X.shape[2]
+                subset_size = subset_X.shape[2]
+
+                dist = torch.cdist(sample_X_z,subset_X_z,)
+                weights = torch.exp(-(theta*dist/dist.mean(axis=1)[:,None]))
+                
+                if exclusion_rad > 0:
+                    exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)
+                    weights = weights * exclusion_matrix
+
+                W = torch.sqrt(weights.unsqueeze(2))
+
+                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, embed_dim)
+
+                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, embed_dim)
+
+                X = torch.cat([torch.ones((sample_size, subset_size, 1),device=self.device), X], dim=2)
+                
+                X_weighted = X * W
+                Y_weighted = Y * W
+
+                XTWX = torch.bmm(X_weighted.transpose(1, 2), X_weighted)
+                XTWy = torch.bmm(X_weighted.transpose(1, 2), Y_weighted)
+                beta = torch.bmm(torch.inverse(XTWX), XTWy)
+
+                X_ = sample_X_z.unsqueeze(1)
+                X_ = torch.cat([torch.ones((sample_size, 1, 1),device=self.device), X_], dim=2)
+                
+                A = torch.bmm(X_, beta).squeeze(1)[:,[-1]]
+                #A = (A-A.mean(axis=0))/A.std(axis=0)
+
+                B = sample_y[0,-1]
+                #B = (B-B.mean(axis=0))/B.std(axis=0)
+
+
+                XtX = torch.matmul(B.T, B)
+                XtX_inv = torch.inverse(XtX)
+                Xty = torch.matmul(B.T, A)
+
+                WW_ = torch.matmul(XtX_inv, Xty)
+
+                #X_pseudo_inverse = torch.linalg.pinv(B)
+                #WW_ = X_pseudo_inverse @ A
+
+                WW_list += [WW_]
+            WW__ = torch.stack(WW_list).mean(axis=0)
+            #print(WW_.mean())
+            WW__ = (WW__-WW__.mean())/WW__.std()
+            WW = WW__
+            #WW = WW*0.8 + WW__*0.2
+
+            #WW = (WW-WW.mean())/WW.std()
+
+            print(self._get_batch_rmse(A[:,:,None,None],sample_y_z[:,:,None,None]).mean())
+        return WW.cpu().detach().numpy()
+
+
+

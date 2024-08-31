@@ -87,21 +87,21 @@ class IMD_nD_smap:
         ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
         #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
         mask = torch.eye(dim,dtype=bool,device=self.device)
-
+        #mask_1 = torch.roll(torch.eye(dim,dtype=bool,device=self.device),1,0)
+        #mask += mask_1
+        
         if self.subtract_corr:
             #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
             corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))
             if dim > 1:
-                score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-1),axis=2)/2 + \
-                             torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2 +\
-                           -ccm[:,mask]**2 + corr[:,mask]**2).mean()
+                score = 1 + (ccm[:,~mask]).mean() - (ccm[:,mask]**2).mean() + (corr[:,mask]**2).mean()
             else:
                 score = 1 + (-ccm[:,0,0] + corr[:,0,0]).mean()
             return score
         else:
             if dim > 1:
-                score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-1),axis=2)/2 + \
-                             torch.mean(ccm[:,~mask].reshape(-1,dim-1,dim),axis=1)/2 + \
+                score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-2),axis=2)/2 + \
+                             torch.mean(ccm[:,~mask].reshape(-1,dim-2,dim),axis=1)/2 + \
                            -ccm[:,mask]**2).mean()
             else:
                 score = 1 + (-ccm[:,0,0]).mean()
@@ -185,6 +185,8 @@ class IMD_nD_smap:
 
         XTWX = torch.bmm(X_intercept_weighted.transpose(1, 2), X_intercept_weighted)
         XTWy = torch.bmm(X_intercept_weighted.transpose(1, 2), Y_weighted)
+        #XTWX = torch.bmm(X_intercept.transpose(1, 2), X_intercept_weighted)
+        #XTWy = torch.bmm(X_intercept.transpose(1, 2), Y_weighted)
         beta = torch.bmm(torch.inverse(XTWX), XTWy)
         #beta_ = beta.reshape(dim,dim,sample_size,*beta.shape[1:])
 
@@ -321,8 +323,12 @@ class IMD_nD_smap:
 
                 dist = torch.cdist(sample_X_z,subset_X_z,)
                 weights = torch.exp(-(theta*dist/dist.mean(axis=1)[:,None]))
+                
+                if exclusion_rad > 0:
+                    exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)
+                    weights = weights * exclusion_matrix
 
-                W = weights.unsqueeze(2)
+                W = torch.sqrt(weights.unsqueeze(2))
 
                 X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, E)
 
@@ -333,36 +339,118 @@ class IMD_nD_smap:
                 X_weighted = X * W
                 Y_weighted = Y * W
 
-                XTWX = torch.bmm(X.transpose(1, 2), X_weighted)
-                XTWy = torch.bmm(X.transpose(1, 2), Y_weighted)
+                XTWX = torch.bmm(X_weighted.transpose(1, 2), X_weighted)
+                XTWy = torch.bmm(X_weighted.transpose(1, 2), Y_weighted)
                 beta = torch.bmm(torch.inverse(XTWX), XTWy)
 
                 X_ = sample_X_z.unsqueeze(1)
                 X_ = torch.cat([torch.ones((sample_size, 1, 1),device=self.device), X_], dim=2)
                 
                 A = torch.bmm(X_, beta).squeeze(1)
+                #A = (A-A.mean(axis=0))/A.std(axis=0)
 
                 B = sample_y[0]
+                #B = (B-B.mean(axis=0))/B.std(axis=0)
 
-                #XtX = torch.matmul(B.T, B)
-                #XtX_inv = torch.inverse(XtX)
-                #Xty = torch.matmul(B.T, A)
 
-                #WW_ = torch.matmul(XtX_inv, Xty)
+                XtX = torch.matmul(B.T, B)
+                XtX_inv = torch.inverse(XtX)
+                Xty = torch.matmul(B.T, A)
 
-                X_pseudo_inverse = torch.linalg.pinv(B)
-                WW_ = X_pseudo_inverse @ A
+                WW_ = torch.matmul(XtX_inv, Xty)
+
+                #X_pseudo_inverse = torch.linalg.pinv(B)
+                #WW_ = X_pseudo_inverse @ A
 
                 WW_list += [WW_]
             WW__ = torch.stack(WW_list).mean(axis=0)
             #print(WW_.mean())
             WW__ = (WW__-WW__.mean())/WW__.std()
-            WW = WW__
-            #WW = WW*0.6 + WW__*0.4
+            #WW = WW__
+            WW = WW*0.8 + WW__*0.2
+
             #WW = (WW-WW.mean())/WW.std()
 
             print(self._get_batch_rmse(A[:,:,None,None],sample_y_z[:,:,None,None]).mean())
         return WW.cpu().detach().numpy()
 
 
+    def find_iterative_solution_(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, tp_policy="range"):
+        data = torch.tensor(X, device=self.device, dtype=torch.float32)
+        
+        if tp_policy == "fixed":
+            dataset = RandomTpRangeSubsetDataset(data, sample_len, library_len, num_batches, torch.linspace(tp, tp + 1 - 1e-5, num_batches, device=self.device).to(torch.int), device=self.device)
+        elif tp_policy == "range":
+            dataset = RandomTpRangeSubsetDataset(data, sample_len, library_len, num_batches, torch.linspace(1, tp + 1 - 1e-5, num_batches, device=self.device).to(torch.int), device=self.device)
+        else:
+            pass  # TODO: pass an exception
 
+        dataloader = DataLoader(dataset, batch_size=1, pin_memory=False)
+        
+        E = 2
+        WW = torch.normal(0, 1, (data.shape[1], E), device=self.device)
+        for epoch in range(epochs):
+            WW_list = []
+            for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
+                subset_X_z = subset_X[0] @ WW
+                subset_y_z = subset_y[0] @ WW
+                sample_X_z = sample_X[0] @ WW
+                sample_y_z = sample_y[0] @ WW
+
+                sample_size = sample_X.shape[1]
+                subset_size = subset_X.shape[1]
+
+                dist = torch.cdist(sample_X_z, subset_X_z)
+                weights = torch.exp(-(theta * dist / dist.mean(axis=1)[:, None]))
+
+                if exclusion_rad > 0:
+                    exclusion_matrix = (torch.abs(subset_idx - sample_idx.T) > exclusion_rad)
+                    weights = weights * exclusion_matrix
+
+                W = torch.sqrt(weights.unsqueeze(2))
+
+                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, E)
+                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, E)
+
+                Y_centered = Y - X.mean(dim=1, keepdim=True)
+                X_centered = X - X.mean(dim=1, keepdim=True)
+
+                _, _, V_x = torch.svd(X_centered, some=True)
+
+                X_pca = torch.matmul(X_centered, V_x[:, :, :]) 
+                Y_pca = torch.matmul(Y_centered, V_x[:, :, :]) 
+
+            
+                X_pca = torch.cat([torch.ones((sample_size, subset_size, 1), device=self.device), X_pca], dim=2)
+
+                X_weighted = X_pca * W
+                Y_weighted = Y_pca * W
+
+                
+                XTWX = torch.bmm(X_weighted.transpose(1, 2), X_weighted)
+                XTWy = torch.bmm(X_weighted.transpose(1, 2), Y_weighted)
+                beta = torch.bmm(torch.inverse(XTWX), XTWy)
+
+                X_ = sample_X_z.unsqueeze(1)
+                #X_ = X_ - X_.mean(dim=1, keepdim=True)
+                X_ = torch.matmul(X_, V_x[:, :, :]) 
+
+                X_ = torch.cat([torch.ones((sample_size, 1, 1), device=self.device), X_], dim=2)
+
+                A = torch.bmm(X_, beta).squeeze(1)
+                A = torch.matmul(A.unsqueeze(1), torch.linalg.pinv(V_x,)).squeeze(1)
+                B = sample_y[0]
+
+                XtX = torch.matmul(B.T, B)
+                XtX_inv = torch.inverse(XtX)
+                Xty = torch.matmul(B.T, A)
+
+                WW_ = torch.matmul(XtX_inv, Xty)
+
+                WW_list += [WW_]
+            WW__ = torch.stack(WW_list).mean(axis=0)
+            WW__ = (WW__ - WW__.mean()) / WW__.std()
+            WW = WW * 0.5 + WW__ * 0.5
+
+            print(self._get_batch_rmse(A[:, :, None, None], sample_y_z[:, :, None, None]).mean())
+        return WW.cpu().detach().numpy()

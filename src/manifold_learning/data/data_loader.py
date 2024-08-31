@@ -12,6 +12,14 @@ def load_csv_dataset(filename: str) -> pd.DataFrame:
         raise FileNotFoundError(f"File '{filename}' not found in datasets directory.")
     return pd.read_csv(filepath)
 
+
+def load_excel_dataset(filename: str) -> pd.DataFrame:
+    
+    filepath = os.path.join(DATA_DIR, filename)
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File '{filename}' not found in datasets directory.")
+    return pd.read_excel(filepath)
+
 def load_ld2011_2014_dataset() -> pd.DataFrame:
     filename = "LD2011_2014.txt"
     filepath = os.path.join(DATA_DIR, filename)

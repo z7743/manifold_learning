@@ -100,9 +100,7 @@ class IMD_nD_smap:
             return score
         else:
             if dim > 1:
-                score = 1 + (torch.mean(ccm[:,~mask].reshape(-1,dim,dim-2),axis=2)/2 + \
-                             torch.mean(ccm[:,~mask].reshape(-1,dim-2,dim),axis=1)/2 + \
-                           -ccm[:,mask]**2).mean()
+                score = 1 + (ccm[:,~mask]).mean() - (ccm[:,mask]**2).mean() 
             else:
                 score = 1 + (-ccm[:,0,0]).mean()
             return score

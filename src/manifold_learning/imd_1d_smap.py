@@ -21,7 +21,8 @@ class IMD_1D_smap:
         self.embed_lag = embed_lag
         self.embed_dim = embed_dim
 
-    def fit(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
+    def fit(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, 
+            optimizer="Adam", learning_rate=0.001, tp_policy="range",loss_mask_size=None):
         embed_lag = self.embed_lag
         embed_dim = self.embed_dim
 
@@ -58,7 +59,7 @@ class IMD_1D_smap:
                 subset_X_z = torch.permute(subset_X_z, (1, 0, 2))
                 sample_X_z = torch.permute(sample_X_z, (1, 0, 2))
 
-                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad)
+                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad, loss_mask_size)
                 
                 loss /= num_batches
                 loss.backward()
@@ -69,8 +70,18 @@ class IMD_1D_smap:
             print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')
             self.loss_history += [total_loss]
 
-    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
+    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
         dim = sample_X.shape[-1]
+
+        if loss_mask_size is not None:
+            rand_idx = torch.argsort(torch.rand(dim))[:loss_mask_size]
+            sample_X = sample_X[:,:,rand_idx]
+            sample_y = sample_y[:,:,rand_idx]
+            subset_X = subset_X[:,:,rand_idx]
+            subset_y = subset_y[:,:,rand_idx]
+
+            dim = loss_mask_size
+            
         ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
         #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
         mask = torch.eye(dim,dtype=bool,device=self.device)

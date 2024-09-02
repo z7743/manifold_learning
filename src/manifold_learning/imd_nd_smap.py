@@ -27,7 +27,11 @@ class IMD_nD_smap:
         self.subtract_corr = subtract_corr
         self.loss_history = []
 
-    def fit(self, X, sample_len, library_len, exclusion_rad, theta=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range"):
+    def fit(self, X, 
+            sample_len, 
+            library_len, 
+            exclusion_rad, 
+            theta=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range", loss_mask_size=None):
         """
         Fits the model to the data.
 
@@ -43,6 +47,7 @@ class IMD_nD_smap:
             optimizer (str, optional): Optimizer to use, default is "Adam".
             learning_rate (float, optional): Learning rate for the optimizer, default is 0.001.
             tp_policy (str, optional): Batch sampling policy, default is "range". If "range" then the embedding will be optimized for the range of 1...tp and the total number of samplings calculated as num_batches*tp. If "fixed" then within one optimization cycle the embedding will be optimized only for one value of tp.
+            loss_mask_size (int, optional): Number of compoments compared for one batch when the loss is calculated. Helps speed up convergence. If None all components used.
         """
         X = torch.tensor(X,requires_grad=True, device=self.device, dtype=torch.float32)
 
@@ -59,7 +64,7 @@ class IMD_nD_smap:
         if (self.learning_rate != learning_rate) or (self.optimizer_name != optimizer):
             self.learning_rate = learning_rate
             self.optimizer_name = optimizer
-            self.optimizer = getattr(optim, optimizer)(self.model.parameters(), lr=learning_rate,)
+            self.optimizer = getattr(optim, optimizer)(self.model.parameters(), lr=learning_rate)
 
         for epoch in range(epochs):
             total_loss = 0
@@ -71,7 +76,7 @@ class IMD_nD_smap:
                 sample_X_z = self.model(sample_X)
                 sample_y_z = self.model(sample_y)
 
-                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad)
+                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad, loss_mask_size)
 
                 loss /= num_batches
                 loss.backward()
@@ -82,9 +87,20 @@ class IMD_nD_smap:
             print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')
             self.loss_history += [total_loss]
 
-    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
+    def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
         dim = sample_X.shape[-1]
-        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
+
+        if loss_mask_size is not None:
+            rand_idx = torch.argsort(torch.rand(dim))[:loss_mask_size]
+            sample_X = sample_X[:,:,rand_idx]
+            sample_y = sample_y[:,:,rand_idx]
+            subset_X = subset_X[:,:,rand_idx]
+            subset_y = subset_y[:,:,rand_idx]
+
+            dim = loss_mask_size
+
+
+        ccm = (self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
         #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
         mask = torch.eye(dim,dtype=bool,device=self.device)
         #mask_1 = torch.roll(torch.eye(dim,dtype=bool,device=self.device),1,0)
@@ -94,13 +110,13 @@ class IMD_nD_smap:
             #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
             corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))
             if dim > 1:
-                score = 1 + (ccm[:,~mask]).mean() - (ccm[:,mask]**2).mean() + (corr[:,mask]**2).mean()
+                score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() + (corr[:,mask]).mean()
             else:
                 score = 1 + (-ccm[:,0,0] + corr[:,0,0]).mean()
             return score
         else:
             if dim > 1:
-                score = 1 + (ccm[:,~mask]).mean() - (ccm[:,mask]**2).mean() 
+                score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() 
             else:
                 score = 1 + (-ccm[:,0,0]).mean()
             return score

@@ -82,9 +82,16 @@ class IMD_nD_smap:
                 loss.backward()
                 total_loss += loss.item() 
 
+            #model_weights = torch.cat([x for x in self.model.parameters()])
+            #norm_weights = model_weights/torch.abs(model_weights).max(axis=1).values[:,None]
+
+            #l2_norms = torch.norm(norm_weights, p=2)/20
+            #if epoch > 20:
+            #    l2_norms.backward()
+            
             self.optimizer.step()
 
-            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')
+            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')#, L2: {l2_norms.item():.4f}')
             self.loss_history += [total_loss]
 
     def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
@@ -137,40 +144,65 @@ class IMD_nD_smap:
             outputs = torch.permute(self.model(inputs),dims=(0,2,1)) #Easier to interpret
         return outputs.cpu().numpy()
 
-    def generate(self, X, nbrs_num, exclusion_rad, tp=1, device="cpu"):
-        """
-        Generates the prediction using the model.
-        
-        Args:
-            X (numpy.ndarray): Input data.
-            nbrs_num (int): Number of neighbors for kNN search.
-            exclusion_rad (int): Exclusion radius for kNN search.
-            tp (int, optional): Time lag for prediction, default is 1.
-        
-        Returns:
-            tuple: Generated results and the reconstructed input.
-        """
+    def generate(self, X, p, exclusion_rad, theta=5, tp=1, device="cpu"):
         with torch.no_grad():
             X = torch.tensor(X, dtype=torch.float32,device=device)
+            p = torch.tensor(p, dtype=torch.float32,device=device)
+
             self.model.to(device)
-            X_lib_z = self.model(X)
-            lib = torch.permute(X_lib_z,dims=(2,0,1))
+            subset_X = self.model(X[:-tp])
+            subset_y = self.model(X[tp:])
+            sample_X = self.model(p)
 
-            dist = torch.cdist(lib,lib[:,:-tp])
-            indices = torch.topk(dist, nbrs_num + 2 * exclusion_rad, largest=False)[1]
+            dim = subset_X.shape[-1]
+            E_x = subset_X.shape[-2]
+            E_y = subset_y.shape[-2]
+            sample_size = sample_X.shape[0]
+            subset_size = subset_X.shape[0]
 
-            mask = (indices >= (torch.arange(X_lib_z.shape[0],device=device) + exclusion_rad)[None,:,None]) | (indices <= (torch.arange(X_lib_z.shape[0],device=device) - exclusion_rad)[None,:,None])
-            cumsum_mask = mask.cumsum(dim=2)
-            selector = cumsum_mask <= nbrs_num
-            selector = selector * mask
-            indices = indices[selector].view(mask.shape[0],mask.shape[1],nbrs_num)
+            subset_X_t = torch.permute(subset_X,dims=(2,0,1))
+            subset_y_t = torch.permute(subset_y,dims=(2,0,1))
+            sample_X_t = torch.permute(sample_X,dims=(2,0,1))
 
-            indices += tp
-            subset_pred_indexed = lib[torch.arange(X_lib_z.shape[-1],device=device)[:,None,None],indices]
-            res = torch.permute(subset_pred_indexed.mean(axis=2), dims=(1,2,0))
-            rec = self.model.backward(res)
+            subset_idx = torch.arange(subset_size,device=device)[None]
+            sample_idx = torch.arange(sample_size,device=device)[None]
+
+            weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, theta)
+            W = weights.reshape(dim * sample_size, subset_size, 1)
+
+            X = subset_X_t.unsqueeze(1).expand(dim, sample_size, subset_size, E_x)
+            X = X.reshape(dim * sample_size, subset_size, E_x)
+
+            Y = subset_y_t.unsqueeze(1).expand(dim, sample_size, subset_size, E_y)
+            Y = Y.reshape(dim * sample_size, subset_size, E_y)
+
+            X_intercept = torch.cat([torch.ones((dim * sample_size, subset_size, 1),device=device), X], dim=2)
+            
+            X_intercept_weighted = X_intercept * W
+            Y_weighted = Y * W
+
+            XTWX = torch.bmm(X_intercept_weighted.transpose(1, 2), X_intercept_weighted)
+            XTWy = torch.bmm(X_intercept_weighted.transpose(1, 2), Y_weighted)
+            #XTWX = torch.bmm(X_intercept.transpose(1, 2), X_intercept_weighted)
+            #XTWy = torch.bmm(X_intercept.transpose(1, 2), Y_weighted)
+            beta = torch.bmm(torch.inverse(XTWX), XTWy)
+            #beta_ = beta.reshape(dim,dim,sample_size,*beta.shape[1:])
+
+            X_ = sample_X_t
+            X_ = X_.reshape(dim * sample_size, E_x)
+            X_ = torch.cat([torch.ones((dim * sample_size, 1),device=device), X_], dim=1)
+            X_ = X_.reshape(dim * sample_size, 1, E_x+1)
+            
+            #A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
+            #A = torch.permute(A[:,0],(2,3,1,0))
+
+            A = torch.bmm(X_, beta).reshape(dim, sample_size, E_y)
+            res = self.model.backward(torch.permute(A,(1,2,0)),)
+            #A = torch.permute(A,(2,3,1,0))
+            #rec = self.model.backward(res)
             self.model.to(self.device)
-        return res, rec
+        return A.numpy(), res.numpy()
+
 
     def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]

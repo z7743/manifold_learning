@@ -18,3 +18,5 @@ notebooks/.ipynb_checkpoints
 src/manifold_learning/.ipynb_checkpoints/CCM-checkpoint.py
 notebooks/output.mp4
 src/manifold_learning/__pycache__/*
+notebooks/results/*
+build/*

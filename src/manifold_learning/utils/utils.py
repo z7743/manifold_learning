@@ -60,7 +60,7 @@ def get_td_embedding_specified(time_series, delays):
     return embedded
 
 
-def calculate_correlation_dimension(embedded_data, radii=None, device="cpu"):
+def calculate_correlation_dimension(embedded_data, radii=None, device="cpu",max_samples=1e6):
     """
     ChatGPT writen
 
@@ -84,9 +84,19 @@ def calculate_correlation_dimension(embedded_data, radii=None, device="cpu"):
     # Flatten and filter the distance matrix to get relevant quantiles
     distances = distance_matrix.flatten()
     nonzero_distances = distances[distances != 0]
+    
+    # Randomly sample distances if there are too many
+    num_distances = nonzero_distances.numel()
+    if num_distances > max_samples:
+        # Randomly choose a subset of indices from nonzero distances
+        sampled_indices = torch.randperm(num_distances, device=device)[:int(max_samples)]
+        nonzero_distances = nonzero_distances[sampled_indices]
+
+    # Compute quantiles
     q1, q2 = torch.quantile(nonzero_distances, 0.001), torch.quantile(nonzero_distances, 0.999)
     a = torch.log2(q1) - 2
     b = torch.log2(q2) + 2
+
 
     # Calculate radii if not provided
     if radii is None:
@@ -119,6 +129,49 @@ def calculate_correlation_dimension(embedded_data, radii=None, device="cpu"):
     slope = beta[0].item()
     return slope
 
+
+def calculate_local_correlation_statistics(embedded_data, radii=None, device="cpu", max_samples=1e6):
+    # Ensure embedded data is a torch tensor on the appropriate device
+    embedded_data = torch.tensor(embedded_data, device=device)
+
+    # Calculate pairwise distances using PyTorch
+    diff = embedded_data.unsqueeze(1) - embedded_data.unsqueeze(0)  # Shape: [N, N, D]
+    distance_matrix = torch.sqrt((diff ** 2).sum(-1))  # Shape: [N, N]
+
+    # Flatten and filter the distance matrix to get relevant quantiles
+    distances = distance_matrix.flatten()
+    nonzero_distances = distances[distances > 0]
+
+    # Randomly sample distances if there are too many
+    num_distances = nonzero_distances.numel()
+    if num_distances > max_samples:
+        # Randomly choose a subset of indices from nonzero distances
+        sampled_indices = torch.randperm(num_distances, device=device)[:int(max_samples)]
+        nonzero_distances = nonzero_distances[sampled_indices]
+
+    # Compute quantiles
+    q1, q2 = torch.quantile(nonzero_distances, 0.001), torch.quantile(nonzero_distances, 0.999)
+    a = torch.log2(q1) - 2
+    b = torch.log2(q2) + 2
+
+    # Calculate radii if not provided
+    if radii is None:
+        radii = torch.logspace(a.item(), b.item(), steps=100, base=2, device=device)
+
+    log_r = torch.log(radii)  # Shape: [R]
+
+    # Vectorized computation of masks for all radii
+    # Shape of masks: [R, N, N]
+    masks = (distance_matrix.unsqueeze(0) < radii.unsqueeze(1).unsqueeze(2))
+
+    # Compute correlation sums per point
+    # Shape after mean: [R, N], transpose to [N, R]
+    correlation_sums = masks.float().mean(dim=2).T + 1e-10  # Avoid log(0)
+
+    # Logarithm of correlation sums
+    log_C_r = torch.log(correlation_sums)  # Shape: [N, R]
+
+    return log_C_r
 
 def calculate_rank_for_variance(data_matrix, variance_threshold=0.95):
     # Perform PCA

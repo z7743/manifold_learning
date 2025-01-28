@@ -81,6 +81,41 @@ class IMD_1D_smap:
             subset_y = subset_y[:,:,rand_idx]
 
             dim = loss_mask_size
+
+
+        ccm = (self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
+        #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
+        mask = torch.eye(dim,dtype=bool,device=self.device)
+        #mask_1 = torch.roll(torch.eye(dim,dtype=bool,device=self.device),1,0)
+        #mask += mask_1
+        ccm = ccm**2
+
+        if self.subtract_corr:
+            #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
+            corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))**2
+            if dim > 1:
+                score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() + (corr[:,mask]).mean()
+            else:
+                score = 1 + (-ccm[:,0,0] + corr[:,0,0]).mean()
+            return score
+        else:
+            if dim > 1:
+                score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() 
+            else:
+                score = 1 + (-ccm[:,0,0]).mean()
+            return score
+        
+    def loss_fn_(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
+        dim = sample_X.shape[-1]
+
+        if loss_mask_size is not None:
+            rand_idx = torch.argsort(torch.rand(dim))[:loss_mask_size]
+            sample_X = sample_X[:,:,rand_idx]
+            sample_y = sample_y[:,:,rand_idx]
+            subset_X = subset_X[:,:,rand_idx]
+            subset_y = subset_y[:,:,rand_idx]
+
+            dim = loss_mask_size
             
         ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
         #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))

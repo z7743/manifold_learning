@@ -1,6 +1,41 @@
 import torch
 from torch.utils.data import Dataset
 
+class RandomTpRangeSubsetDataset_2p(Dataset):
+    def __init__(self, X, Y, sample_size, subset_size, num_batches=32, tp_range=torch.arange(1,2), device="cuda"):
+        """
+        Initializes the RandomSubsetDataset.
+        
+        Args:
+            X (torch.Tensor): Multivariate time series to be sampled.
+            y (torch.Tensor): Multivariate time series coupled with X.
+            sample_len (int): Number of samples used for prediction.
+            library_len (int): Number of samples used for kNN search.
+            num_batches (int): Number of random batches to be produced.
+            device (str, optional): Device to place the dataset on, default is "cuda".
+        """
+        self.device = device
+        self.X = X
+        self.Y = Y
+        self.sample_size = sample_size
+        self.subset_size = subset_size
+        self.tp_range = tp_range
+        self.tp_max = tp_range.max()
+        self.num_batches = num_batches
+        self.num_datapoints = X.shape[0]
+
+    def __len__(self):
+        return self.tp_range.shape[0] #* self.num_batches #Temporary solution to sample number of samples
+    
+    def __getitem__(self, idx):
+        sample_idx = torch.argsort(torch.rand(self.num_datapoints-self.tp_max-1,device=self.device))[0:self.sample_size]
+        subset_idx = torch.argsort(torch.rand(self.num_datapoints-self.tp_max-1,device=self.device))[0:self.subset_size + self.sample_size]
+        subset_idx = subset_idx[(subset_idx.view(1, -1) != sample_idx.view(-1, 1)).all(dim=0)][0:self.subset_size]
+        
+        return subset_idx, sample_idx, self.X[subset_idx],self.Y[subset_idx+self.tp_range[idx%self.tp_range.shape[0]]],\
+                                        self.X[sample_idx], self.Y[sample_idx+self.tp_range[idx%self.tp_range.shape[0]]],\
+                                        self.Y[subset_idx], self.X[subset_idx+self.tp_range[idx%self.tp_range.shape[0]]],\
+                                        self.Y[sample_idx], self.X[sample_idx+self.tp_range[idx%self.tp_range.shape[0]]],\
 
 class RandomTpRangeSubsetDataset(Dataset):
     def __init__(self, X, sample_size, subset_size, num_batches=32, tp_range=torch.arange(1,2), device="cuda"):

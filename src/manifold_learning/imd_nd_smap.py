@@ -112,10 +112,11 @@ class IMD_nD_smap:
         mask = torch.eye(dim,dtype=bool,device=self.device)
         #mask_1 = torch.roll(torch.eye(dim,dtype=bool,device=self.device),1,0)
         #mask += mask_1
-        
+        ccm = ccm**2
+
         if self.subtract_corr:
             #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
-            corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))
+            corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))**2
             if dim > 1:
                 score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() + (corr[:,mask]).mean()
             else:
@@ -124,6 +125,49 @@ class IMD_nD_smap:
         else:
             if dim > 1:
                 score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() 
+            else:
+                score = 1 + (-ccm[:,0,0]).mean()
+            return score
+        
+    def loss_fn_(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
+        dim = sample_X.shape[-1]
+
+        if loss_mask_size is not None:
+            rand_idx = torch.argsort(torch.rand(dim))[:loss_mask_size]
+            sample_X = sample_X[:,:,rand_idx]
+            sample_y = sample_y[:,:,rand_idx]
+            subset_X = subset_X[:,:,rand_idx]
+            subset_y = subset_y[:,:,rand_idx]
+
+            dim = loss_mask_size
+
+
+        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
+        #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
+        mask = torch.eye(dim,dtype=bool,device=self.device)
+        #mask_1 = torch.roll(torch.eye(dim,dtype=bool,device=self.device),1,0)
+        #mask += mask_1
+        ccm = ccm.mean(axis=0)[None]
+        if self.subtract_corr:
+            #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
+            corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))
+            if dim > 1:
+                score = -torch.log(
+                    torch.exp((ccm[:,mask]))/
+                    torch.exp((ccm[:,~mask]).reshape(-1,dim,dim-1)).sum(axis=2)/
+                    torch.exp((corr[:,mask]))
+                    ).mean()
+                #score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() + (corr[:,mask]).mean()
+            else:
+                #score = 1 + (-ccm[:,0,0] + corr[:,0,0]).mean()
+                score = 1 + (-ccm[0,0] + corr[0,0]).mean()
+            return score
+        else:
+            if dim > 1:
+                score = -torch.log(
+                    torch.exp((ccm[mask]))/
+                    torch.exp((ccm)).sum(axis=1)).mean()
+                #score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() 
             else:
                 score = 1 + (-ccm[:,0,0]).mean()
             return score
@@ -250,6 +294,7 @@ class IMD_nD_smap:
         B = sample_y.unsqueeze(-1).expand(sample_size, E_y, dim, dim)
         #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)
         
+        #r_AB = self._get_batch_corr(A,B)
         r_AB = self._get_batch_corr(A,B)
         return r_AB
     
@@ -272,34 +317,45 @@ class IMD_nD_smap:
         sum_BB = torch.sum((B - mean_B[None,:,:]) ** 2,axis=0)
         
         r_AB = sum_AB / torch.sqrt(sum_AA * sum_BB)
-        return r_AB
-    
-    def _get_batch_cosine_similarity(self,A, B):
-        """
-        Computes the batch-wise cosine similarity between two 4D tensors A and B.
+        return r_AB    
         
-        Args:
-        A, B: Tensors of shape [num points, num dims, num components, num components].
+
+    def _get_batch_rv(self,A, B):
+        num_points, num_dim, n_comp, _ = A.shape
         
-        Returns:
-        Tensor of cosine similarities with shape [num dims, num components, num components].
-        """
-        # Compute the norms of A and B along the num points axis
-        norm_A = torch.norm(A, p=2, dim=0, keepdim=True)
-        norm_B = torch.norm(B, p=2, dim=0, keepdim=True)
+        # 1. Center A and B over num_points
+        mean_A = A.mean(dim=0, keepdim=True)
+        mean_B = B.mean(dim=0, keepdim=True)
         
-        # Avoid division by zero
-        norm_A = torch.where(norm_A == 0, torch.ones_like(norm_A), norm_A)
-        norm_B = torch.where(norm_B == 0, torch.ones_like(norm_B), norm_B)
+        A_c = A - mean_A
+        B_c = B - mean_B
         
-        # Normalize A and B
-        A_normalized = A / norm_A
-        B_normalized = B / norm_B
+        # 2. Flatten (n_comp, n_comp) dimension
+        A_flat = A_c.reshape(num_points, num_dim, n_comp*n_comp)
+        B_flat = B_c.reshape(num_points, num_dim, n_comp*n_comp)
         
-        # Compute the dot product between normalized A and B
-        dot_product = torch.sum(A_normalized * B_normalized, dim=0)
+        # 3. Permute to (batch, num_points, num_dim)
+        A_batched = A_flat.permute(2, 0, 1)
+        B_batched = B_flat.permute(2, 0, 1)
         
-        return dot_product
+        # 4. Compute Gram matrices in batch
+        A_mat = torch.bmm(A_batched, A_batched.transpose(1,2))
+        B_mat = torch.bmm(B_batched, B_batched.transpose(1,2))
+        
+        # 5. Compute required Frobenius inner products
+        trace_AB = (A_mat * B_mat).sum(dim=(1,2))
+        trace_AA = (A_mat * A_mat).sum(dim=(1,2))
+        trace_BB = (B_mat * B_mat).sum(dim=(1,2))
+        
+        # 6. Compute RV
+        RV_values = trace_AB / torch.sqrt(trace_AA * trace_BB)
+        
+        # 7. Reshape to (n_comp, n_comp)
+        RV_mat = RV_values.view(n_comp, n_comp)
+        
+        return RV_mat[None]
+
+
 
     def _get_batch_rmse(self, A, B):
         """
@@ -354,8 +410,8 @@ class IMD_nD_smap:
         dataloader = DataLoader(dataset, batch_size=1,pin_memory=False)
         
         
-        E = 2
-        WW = torch.normal(0,1,(data.shape[1],E),device=self.device)
+        #E = 2
+        WW = torch.normal(0,1,(data.shape[1],10),device=self.device)
         for epoch in range(epochs):
             WW_list = []
             for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
@@ -376,21 +432,37 @@ class IMD_nD_smap:
 
                 W = torch.sqrt(weights.unsqueeze(2))
 
-                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, E)
+                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, WW.shape[1])
 
-                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, E)
+                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, WW.shape[1])
 
-                X = torch.cat([torch.ones((sample_size, subset_size, 1),device=self.device), X], dim=2)
+                #X = torch.cat([torch.ones((sample_size, subset_size, 1),device=self.device), X], dim=2)
                 
                 X_weighted = X * W
                 Y_weighted = Y * W
 
-                XTWX = torch.bmm(X_weighted.transpose(1, 2), X_weighted)
-                XTWy = torch.bmm(X_weighted.transpose(1, 2), Y_weighted)
-                beta = torch.bmm(torch.inverse(XTWX), XTWy)
+                # Compute the weighted cross-covariance matrix (XTWy)
+                XTWX = torch.bmm(X_weighted.transpose(1, 2), X_weighted)  # (120, 256, 256)
+                XTWy = torch.bmm(X_weighted.transpose(1, 2), Y_weighted)  # (120, 256, 256)
+
+                # Compute the inverse of the weighted covariance matrix for X (XTWX)
+                XTWX_inv = torch.inverse(XTWX)  # (120, 256, 256)
+
+                # Generalized eigenvalue problem for maximum correlation
+                left_matrix = torch.bmm(XTWy, torch.inverse(torch.bmm(Y_weighted.transpose(1, 2), Y_weighted)))  # (120, 256, 256)
+                
+                # Perform eigen decomposition (only keeping the needed components)
+                eigvals, eigvecs = torch.linalg.eigh(torch.bmm(XTWX_inv, left_matrix))  # (120, 256, 256)
+
+                # Sorting eigenvectors based on eigenvalues
+                sorted_indices = torch.argsort(eigvals, descending=True)
+
+                # Extract the first 10 sorted eigenvectors for each sample (batch)
+                beta = torch.stack([eigvecs[i][:, sorted_indices[i][:10]] for i in range(eigvecs.shape[0])])
+
 
                 X_ = sample_X_z.unsqueeze(1)
-                X_ = torch.cat([torch.ones((sample_size, 1, 1),device=self.device), X_], dim=2)
+                #X_ = torch.cat([torch.ones((sample_size, 1, 1),device=self.device), X_], dim=2)
                 
                 A = torch.bmm(X_, beta).squeeze(1)
                 #A = (A-A.mean(axis=0))/A.std(axis=0)
@@ -405,19 +477,15 @@ class IMD_nD_smap:
 
                 WW_ = torch.matmul(XtX_inv, Xty)
 
-                #X_pseudo_inverse = torch.linalg.pinv(B)
-                #WW_ = X_pseudo_inverse @ A
-
                 WW_list += [WW_]
             WW__ = torch.stack(WW_list).mean(axis=0)
             #print(WW_.mean())
             WW__ = (WW__-WW__.mean())/WW__.std()
             #WW = WW__
-            WW = WW*0.8 + WW__*0.2
-
+            WW =  WW__
             #WW = (WW-WW.mean())/WW.std()
 
-            print(self._get_batch_rmse(A[:,:,None,None],sample_y_z[:,:,None,None]).mean())
+            print(self._get_batch_corr(A[:,:,None,None],sample_y_z[:,:,None,None]).mean())
         return WW.cpu().detach().numpy()
 
 
@@ -433,8 +501,7 @@ class IMD_nD_smap:
 
         dataloader = DataLoader(dataset, batch_size=1, pin_memory=False)
         
-        E = 2
-        WW = torch.normal(0, 1, (data.shape[1], E), device=self.device)
+        WW = torch.normal(0, 1, (data.shape[1], 5), device=self.device)
         for epoch in range(epochs):
             WW_list = []
             for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
@@ -455,8 +522,8 @@ class IMD_nD_smap:
 
                 W = torch.sqrt(weights.unsqueeze(2))
 
-                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, E)
-                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, E)
+                X = subset_X_z.unsqueeze(0).expand(sample_size, subset_size, WW.shape[1])
+                Y = subset_y_z.unsqueeze(0).expand(sample_size, subset_size, WW.shape[1])
 
                 Y_centered = Y - X.mean(dim=1, keepdim=True)
                 X_centered = X - X.mean(dim=1, keepdim=True)
@@ -493,10 +560,12 @@ class IMD_nD_smap:
 
                 WW_ = torch.matmul(XtX_inv, Xty)
 
+
+
                 WW_list += [WW_]
             WW__ = torch.stack(WW_list).mean(axis=0)
             WW__ = (WW__ - WW__.mean()) / WW__.std()
-            WW = WW * 0.5 + WW__ * 0.5
+            WW =WW__
 
             print(self._get_batch_rmse(A[:, :, None, None], sample_y_z[:, :, None, None]).mean())
         return WW.cpu().detach().numpy()

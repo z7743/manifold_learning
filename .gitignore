@@ -6,8 +6,6 @@ src/manifold_learning/data/datasets/*
 notebooks/.ipynb_checkpoints
 src/manifold_learning/.ipynb_checkpoints
 src/manifold_learning/__pycache__
-notebooks/traffic_dataset_14_20_sl10_ll360_knn20_tp15.pth
-notebooks/traffic_dataset_14_20_sl140_ll400_knn20_tp15.pth
 notebooks/.ipynb_checkpoints
 notebooks/cICA-nD.ipynb
 notebooks/traffic_dataset_pca.pth

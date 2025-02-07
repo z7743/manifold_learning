@@ -21,18 +21,21 @@ class LinearProjectionNDim(nn.Module):
 
         if random_state != None:
             torch.manual_seed(random_state)
-        self.model = nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
+        #self.model = nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
+        
         #self.model = nn.Sequential(nn.Dropout(0.25), 
         #                           nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,),
                                    
         #                           )
         #self.model = BitLinearNew(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
-        #self.model = nn.Sequential(nn.Linear(input_dim, input_dim, bias=True,device=self.device,),
-        #                           nn.Sigmoid(),
-        #                            nn.Linear(input_dim, input_dim, bias=True,device=self.device,),
-        #                           nn.Sigmoid(),
-        #                           nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
-        #                           )
+        self.model = nn.Sequential(nn.Linear(input_dim, input_dim*2, bias=True,device=self.device,),
+                                   nn.Tanh(),
+                                    nn.Linear(input_dim*2, input_dim, bias=True,device=self.device,),
+                                   nn.Tanh(),
+                                    nn.Linear(input_dim, input_dim//2, bias=True,device=self.device,),
+                                   nn.Tanh(),
+                                   nn.Linear(input_dim//2, output_dim*embed_dim, bias=False,device=self.device,)
+                                   )
 
     def forward(self, x):
         """

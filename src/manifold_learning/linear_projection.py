@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 
 class LinearProjectionNDim(nn.Module):
     def __init__(self, input_dim, embed_dim, output_dim, device="cuda",random_state=None):
@@ -21,21 +22,32 @@ class LinearProjectionNDim(nn.Module):
 
         if random_state != None:
             torch.manual_seed(random_state)
-        #self.model = nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
+        self.model = nn.Linear(input_dim, output_dim*embed_dim, bias=True,device=self.device)
+
+
+        #self.apply(self._init_weights)
         
         #self.model = nn.Sequential(nn.Dropout(0.25), 
         #                           nn.Linear(input_dim, output_dim*embed_dim, bias=False,device=self.device,),
                                    
         #                           )
         #self.model = BitLinearNew(input_dim, output_dim*embed_dim, bias=False,device=self.device,)
-        self.model = nn.Sequential(nn.Linear(input_dim, input_dim*2, bias=True,device=self.device,),
-                                   nn.Tanh(),
-                                    nn.Linear(input_dim*2, input_dim, bias=True,device=self.device,),
-                                   nn.Tanh(),
-                                    nn.Linear(input_dim, input_dim//2, bias=True,device=self.device,),
-                                   nn.Tanh(),
-                                   nn.Linear(input_dim//2, output_dim*embed_dim, bias=False,device=self.device,)
-                                   )
+        #self.model = nn.Sequential(nn.Linear(input_dim, input_dim//2, bias=True,device=self.device,),
+        #                           nn.Tanh(),
+        #                            nn.Linear(input_dim//2, input_dim//4, bias=True,device=self.device,),
+        #                           nn.Tanh(),
+        #                            nn.Linear(input_dim//4, input_dim//8, bias=True,device=self.device,),
+        #                           nn.Tanh(),
+        #                           nn.Linear(input_dim//8, output_dim*embed_dim, bias=False,device=self.device,)
+        #)
+    
+    def _init_weights(self, m):
+        # Check for layers that require initialization
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            # Use Kaiming Normal initialization (He initialization)
+            init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                init.zeros_(m.bias)
 
     def forward(self, x):
         """

@@ -3,6 +3,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from .linear_projection import LinearProjectionNDim
 from .data_samplers import RandomTpRangeXYSubsetDataset
+import torch.nn as nn
+import torch.nn.functional as F
 
 class IMD_reg_smap:
 
@@ -20,6 +22,12 @@ class IMD_reg_smap:
         self.device = device
 
         self.model = LinearProjectionNDim(input_dim, embed_dim, 1, device,random_state)
+        #self.model_Y = nn.Sequential(nn.Linear(1, 1, bias=True,device=self.device,),
+        #                           nn.Tanh(),
+        #                           nn.Linear(1, 1, bias=True,device=self.device,),
+        #                           nn.Tanh(),
+        #                          )
+        self.init_l1_norm = sum((p.abs() / (p.abs().max() + 1e-8)).sum() for p in self.model.parameters() if p.requires_grad).item()
         self.optimizer_name = None
         self.learning_rate = None
         self.optimizer = None
@@ -64,7 +72,12 @@ class IMD_reg_smap:
         if (self.learning_rate != learning_rate) or (self.optimizer_name != optimizer):
             self.learning_rate = learning_rate
             self.optimizer_name = optimizer
-            self.optimizer = getattr(optim, optimizer)(self.model.parameters(), lr=learning_rate)
+            #self.optimizer = getattr(optim, optimizer)(self.model.parameters(), lr=learning_rate)
+            
+            self.optimizer = getattr(optim, optimizer)(
+                    list(self.model.parameters()), #+ list(self.model_Y.parameters()),
+                    lr=learning_rate
+            )
 
         for epoch in range(epochs):
             total_loss = 0
@@ -72,27 +85,21 @@ class IMD_reg_smap:
 
             for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
                 subset_X_z = self.model(subset_X)
-                subset_y_z = subset_y[0][:,:,None]
+                subset_y_z = subset_y[0][:,:,None]#self.model_Y(subset_y[0])[:,:,None]
                 sample_X_z = self.model(sample_X)
-                sample_y_z = sample_y[0][:,:,None]
+                sample_y_z = sample_y[0][:,:,None]#self.model_Y(sample_y[0])[:,:,None]
 
-                loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad)
+                loss = self.loss_fn(subset_idx, sample_idx, sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad)
 
                 loss /= num_batches
-                loss.backward()
-                total_loss += loss.item() 
+                total_loss += loss#.item() 
 
-            #model_weights = torch.cat([x for x in self.model.parameters()])
-            #norm_weights = model_weights/torch.abs(model_weights).max(axis=1).values[:,None]
+            total_loss.backward()
 
-            #l2_norms = torch.norm(norm_weights, p=2)/20
-            #if epoch > 20:
-            #    l2_norms.backward()
-            
             self.optimizer.step()
 
-            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')#, L2: {l2_norms.item():.4f}')
-            self.loss_history += [total_loss]
+            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss.item():.4f}')#, L2: {l2_norms.item():.4f}')
+            self.loss_history += [total_loss.item()]
 
     def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]
@@ -135,7 +142,21 @@ class IMD_reg_smap:
             inputs = torch.tensor(X, dtype=torch.float32,device=self.device)
             outputs = torch.permute(self.model(inputs),dims=(0,2,1)) #Easier to interpret
         return outputs.cpu().numpy()
-
+    
+    #def predict_Y(self, Y):
+        """
+        Calculates embeddings using the trained model.
+        
+        Args:
+            X (numpy.ndarray): Input data.
+        
+        Returns:
+            numpy.ndarray: Predicted outputs.
+        """
+        with torch.no_grad():
+            inputs = torch.tensor(Y, dtype=torch.float32,device=self.device)
+            outputs = self.model_Y(inputs) #Easier to interpret
+        return outputs.cpu().numpy()
 
     def _get_ccm_matrix_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
         dim = sample_X.shape[-1]

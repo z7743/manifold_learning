@@ -1,4 +1,5 @@
 import torch
+import copy
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from .linear_projection import LinearProjectionNDim
@@ -21,6 +22,9 @@ class IMD_nD_smap:
         self.device = device
 
         self.model = LinearProjectionNDim(input_dim, embed_dim, n_components, device,random_state)
+        #= sum((p.abs() / (p.abs().max() + 1e-8)).sum() for p in self.model.parameters() if p.requires_grad).item()
+        
+
         self.optimizer_name = None
         self.learning_rate = None
         self.optimizer = None
@@ -31,7 +35,15 @@ class IMD_nD_smap:
             sample_len, 
             library_len, 
             exclusion_rad, 
-            theta=None, tp=1, epochs=100, num_batches=32, optimizer="Adam", learning_rate=0.001, tp_policy="range", loss_mask_size=None):
+            theta=None, 
+            tp=1, 
+            epochs=100, 
+            num_batches=32, 
+            optimizer="Adam", 
+            learning_rate=0.001,
+            beta=1,
+            tp_policy="range", 
+            loss_mask_size=None):
         """
         Fits the model to the data.
 
@@ -67,9 +79,9 @@ class IMD_nD_smap:
             self.optimizer = getattr(optim, optimizer)(self.model.parameters(), lr=learning_rate)
 
         for epoch in range(epochs):
-            total_loss = 0
             self.optimizer.zero_grad()
 
+            ccm_loss = 0
             for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
                 subset_X_z = self.model(subset_X)
                 subset_y_z = self.model(subset_y)
@@ -79,20 +91,33 @@ class IMD_nD_smap:
                 loss = self.loss_fn(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad, loss_mask_size)
 
                 loss /= num_batches
-                loss.backward()
-                total_loss += loss.item() 
+                ccm_loss += loss
 
-            #model_weights = torch.cat([x for x in self.model.parameters()])
-            #norm_weights = model_weights/torch.abs(model_weights).max(axis=1).values[:,None]
-
-            #l2_norms = torch.norm(norm_weights, p=2)/20
-            #if epoch > 20:
-            #    l2_norms.backward()
             
+            #m2 = sum(((p.abs() - p.abs().mean())**2).sum() 
+            #        for p in self.model.parameters() if p.requires_grad)
+            #m3 = sum(((p.abs() - p.abs().mean())**3).sum() 
+            #        for p in self.model.parameters() if p.requires_grad)
+            #s_norm = m2/(m3 + 1e-8)
+            #s_norm /= self.init_s_norm
+
+            #total_loss += s_norm
+            l1 = sum(p.abs().sum() 
+                    for p in self.model.parameters() if p.requires_grad)
+            l2 = sum(p.norm(2)
+                    for p in self.model.parameters() if p.requires_grad)
+            num_w = torch.tensor(sum(p.numel()
+                    for p in self.model.parameters() if p.requires_grad),dtype=torch.float32)
+            h_norm = 1-(torch.sqrt(num_w) - (l1 / (l2 + 1e-6))) / (torch.sqrt(num_w) - 1)
+            
+            total_loss = ccm_loss + beta * h_norm
+
+            total_loss.backward()
+
             self.optimizer.step()
 
-            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss:.4f}')#, L2: {l2_norms.item():.4f}')
-            self.loss_history += [total_loss]
+            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss.item():.4f}, ccm_loss: {ccm_loss.item():.4f}, h_norm_loss: {h_norm.item():.4f}')#, L2: {l2_norms.item():.4f}')
+            self.loss_history += [total_loss.item()]
 
     def loss_fn(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
         dim = sample_X.shape[-1]
@@ -128,8 +153,93 @@ class IMD_nD_smap:
             else:
                 score = 1 + (-ccm[:,0,0]).mean()
             return score
-        
-    def loss_fn_(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
+    
+    def normalize_weights(self, X, 
+            sample_len, 
+            library_len, 
+            exclusion_rad, 
+            theta=None, 
+            tp=1, 
+            epochs=100, 
+            num_batches=32, 
+            optimizer="Adam", 
+            learning_rate=0.001,
+            beta=1,
+            tp_policy="range",
+            loss_mask_size=None):
+
+        fixed_model = copy.deepcopy(self.model)
+
+        for param in fixed_model.parameters():
+            param.requires_grad = False
+
+        X = torch.tensor(X,requires_grad=True, device=self.device, dtype=torch.float32)
+
+        if tp_policy == "fixed":
+            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(tp, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int),device=self.device)
+        elif tp_policy == "range":
+            dataset = RandomTpRangeSubsetDataset(X, sample_len, library_len, num_batches, torch.linspace(1, tp+1 - 1e-5,num_batches,device=self.device).to(torch.int), device=self.device)
+        else:
+            pass #TODO: pass an exception
+
+        dataloader = DataLoader(dataset, batch_size=1,pin_memory=False)
+
+        # Reinitialize optimizer if parameters changed
+        if (self.learning_rate != learning_rate) or (self.optimizer_name != optimizer):
+            self.learning_rate = learning_rate
+            self.optimizer_name = optimizer
+            self.optimizer = getattr(optim, optimizer)(self.model.parameters(), lr=learning_rate)
+
+        for epoch in range(epochs):
+            self.optimizer.zero_grad()
+
+            ccm_loss = 0
+            for subset_idx, sample_idx, subset_X, subset_y, sample_X, sample_y in dataloader:
+                ## forward ===> ##
+                subset_X_z = self.model(subset_X)
+                subset_y_z = fixed_model(subset_y)
+                sample_X_z = self.model(sample_X)
+                sample_y_z = fixed_model(sample_y)
+
+                loss = self.norm_loss(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad, loss_mask_size)
+
+                loss /= num_batches
+                ccm_loss += loss / 2
+
+                ## backward <=== ##
+                subset_X_z = fixed_model(subset_X)
+                subset_y_z = self.model(subset_y)
+                sample_X_z = fixed_model(sample_X)
+                sample_y_z = self.model(sample_y)
+
+                loss = self.norm_loss(subset_idx, sample_idx,sample_X_z, sample_y_z, subset_X_z, subset_y_z, theta, exclusion_rad, loss_mask_size)
+
+                loss /= num_batches
+                ccm_loss += loss / 2
+
+            #m2 = sum(((p.abs() - p.abs().mean())**2).sum() 
+            #        for p in self.model.parameters() if p.requires_grad)
+            #m3 = sum(((p.abs() - p.abs().mean())**3).sum() 
+            #        for p in self.model.parameters() if p.requires_grad)
+            #s_norm = m2/(m3 + 1e-8)
+            #s_norm /= self.init_s_norm
+            l1 = sum(p.abs().sum() 
+                    for p in self.model.parameters() if p.requires_grad)
+            l2 = sum(p.norm(2)
+                    for p in self.model.parameters() if p.requires_grad)
+            num_w = torch.tensor(sum(p.numel()
+                    for p in self.model.parameters() if p.requires_grad),dtype=torch.float32)
+            h_norm = 1-(torch.sqrt(num_w) - (l1 / (l2 + 1e-6))) / (torch.sqrt(num_w) - 1)
+            
+            total_loss = ccm_loss + beta * h_norm
+            total_loss.backward()
+
+            self.optimizer.step()
+
+            print(f'Epoch {epoch + 1}/{epochs}, Loss: {total_loss.item():.4f}, ccm_loss: {ccm_loss.item():.4f}, h_norm_loss: {h_norm.item():.4f}')#, L2: {l2_norms.item():.4f}')
+            self.loss_history += [total_loss.item()]
+
+    def norm_loss(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad, loss_mask_size):
         dim = sample_X.shape[-1]
 
         if loss_mask_size is not None:
@@ -141,37 +251,20 @@ class IMD_nD_smap:
 
             dim = loss_mask_size
 
+        ccm = (self._get_ccm_vector_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
 
-        ccm = torch.abs(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad))
-        #ccm = -(self._get_ccm_matrix_approx(subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, nbrs_num, exclusion_rad))
-        mask = torch.eye(dim,dtype=bool,device=self.device)
-        #mask_1 = torch.roll(torch.eye(dim,dtype=bool,device=self.device),1,0)
-        #mask += mask_1
-        ccm = ccm.mean(axis=0)[None]
+        ccm = ccm**2
+
         if self.subtract_corr:
-            #corr = -(self._get_autoreg_matrix_approx(sample_y, sample_X))
-            corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))
-            if dim > 1:
-                score = -torch.log(
-                    torch.exp((ccm[:,mask]))/
-                    torch.exp((ccm[:,~mask]).reshape(-1,dim,dim-1)).sum(axis=2)/
-                    torch.exp((corr[:,mask]))
-                    ).mean()
-                #score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() + (corr[:,mask]).mean()
-            else:
-                #score = 1 + (-ccm[:,0,0] + corr[:,0,0]).mean()
-                score = 1 + (-ccm[0,0] + corr[0,0]).mean()
+            corr = torch.abs(self._get_autoreg_matrix_approx(sample_X,sample_y))**2
+
+            score = 1  - (ccm).mean() + (corr).mean()
+
             return score
         else:
-            if dim > 1:
-                score = -torch.log(
-                    torch.exp((ccm[mask]))/
-                    torch.exp((ccm)).sum(axis=1)).mean()
-                #score = 1 + torch.abs(ccm[:,~mask]).mean() - (ccm[:,mask]).mean() 
-            else:
-                score = 1 + (-ccm[:,0,0]).mean()
-            return score
+            score = 1 - (ccm).mean() 
         
+            return score
     
     def predict(self, X):
         """
@@ -292,6 +385,56 @@ class IMD_nD_smap:
         A = torch.permute(A,(2,3,1,0))
 
         B = sample_y.unsqueeze(-1).expand(sample_size, E_y, dim, dim)
+        #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)
+        
+        #r_AB = self._get_batch_corr(A,B)
+        r_AB = self._get_batch_corr(A,B)
+        return r_AB
+    
+    def _get_ccm_vector_approx(self, subset_idx, sample_idx, sample_X, sample_y, subset_X, subset_y, theta, exclusion_rad):
+        dim = sample_X.shape[-1]
+        E_x = sample_X.shape[-2]
+        E_y = sample_y.shape[-2]
+        sample_size = sample_X.shape[0]
+        subset_size = subset_X.shape[0]
+
+        sample_X_t = sample_X.permute(2, 0, 1)
+        subset_X_t = subset_X.permute(2, 0, 1)
+        subset_y_t = subset_y.permute(2, 0, 1)
+        
+        weights = self._get_local_weights(subset_X_t,sample_X_t,subset_idx, sample_idx, exclusion_rad, theta)
+        W = weights.reshape(dim * sample_size, subset_size, 1)
+
+        X = subset_X_t.unsqueeze(1).expand(dim, sample_size, subset_size, E_x)
+        X = X.reshape(dim * sample_size, subset_size, E_x)
+
+        Y = subset_y_t.unsqueeze(1).expand(dim, sample_size, subset_size, E_y)
+        Y = Y.reshape(dim * sample_size, subset_size, E_y)
+
+        X_intercept = torch.cat([torch.ones((dim * sample_size, subset_size, 1),device=self.device), X], dim=2)
+        
+        X_intercept_weighted = X_intercept * W
+        Y_weighted = Y * W
+
+        XTWX = torch.bmm(X_intercept_weighted.transpose(1, 2), X_intercept_weighted)
+        XTWy = torch.bmm(X_intercept_weighted.transpose(1, 2), Y_weighted)
+        #XTWX = torch.bmm(X_intercept.transpose(1, 2), X_intercept_weighted)
+        #XTWy = torch.bmm(X_intercept.transpose(1, 2), Y_weighted)
+        beta = torch.bmm(torch.inverse(XTWX), XTWy)
+        #beta_ = beta.reshape(dim,dim,sample_size,*beta.shape[1:])
+
+        X_ = sample_X_t
+        X_ = X_.reshape(dim * sample_size, E_x)
+        X_ = torch.cat([torch.ones((dim * sample_size, 1),device=self.device), X_], dim=1)
+        X_ = X_.reshape(dim * sample_size, 1, E_x+1)
+        
+        #A = torch.einsum('abpij,bcpi->abcpj', beta, X_)
+        #A = torch.permute(A[:,0],(2,3,1,0))
+
+        A = torch.bmm(X_, beta).reshape(dim, sample_size, E_y)
+        A = torch.permute(A,(1,2,0))
+
+        B = sample_y
         #TODO: test whether B = sample_y.unsqueeze(-2).expand(sample_size, E_y, dim, dim)
         
         #r_AB = self._get_batch_corr(A,B)
